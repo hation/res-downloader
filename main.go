@@ -3,14 +3,18 @@ package main
 import (
 	"context"
 	"embed"
+	"flag"
 	"fmt"
 	"github.com/wailsapp/wails/v2/pkg/menu"
 	"github.com/wailsapp/wails/v2/pkg/options/linux"
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
 	"github.com/wailsapp/wails/v2/pkg/options/windows"
 	"log"
+	"os"
+	"os/signal"
 	"res-downloader/core"
 	"runtime"
+	"syscall"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -27,8 +31,17 @@ var icon []byte
 var wailsJson string
 
 func main() {
+	headless := flag.Bool("headless", false, "run without GUI (HTTP API only)")
+	flag.Parse()
+
 	// Create an instance of the app structure
 	app := core.GetApp(assets, wailsJson)
+
+	if *headless {
+		runHeadless(app)
+		return
+	}
+
 	bind := core.NewBind()
 	isMac := runtime.GOOS == "darwin"
 	// menu
@@ -98,4 +111,20 @@ func main() {
 	if err != nil {
 		println("Error:", err.Error())
 	}
+}
+
+// runHeadless starts only the HTTP API + proxy service, no GUI window.
+func runHeadless(app *core.App) {
+	fmt.Printf("[headless] %s v%s starting...\n", app.AppName, app.Version)
+	// ctx stays nil so Wails runtime calls are no-ops (see core guards)
+	app.StartService()
+	fmt.Printf("[headless] HTTP API + proxy listening on http://%s:%s\n", "127.0.0.1", "8899")
+	fmt.Println("[headless] Press Ctrl+C to stop.")
+
+	// wait for interrupt
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	<-sig
+	fmt.Println("\n[headless] shutting down...")
+	_ = app.UnsetSystemProxy()
 }

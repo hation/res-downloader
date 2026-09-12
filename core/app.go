@@ -131,6 +131,13 @@ func (a *App) Startup(ctx context.Context) {
 	go httpServerOnce.run()
 }
 
+// StartService starts the HTTP API + proxy server without binding a Wails context.
+// Used by headless (CLI-only) mode so runtime.* calls are safely skipped.
+func (a *App) StartService() {
+	a.ctx = nil
+	go httpServerOnce.run()
+}
+
 func (a *App) OnExit() {
 	a.UnsetSystemProxy()
 	globalLogger.Close()

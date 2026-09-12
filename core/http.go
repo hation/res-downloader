@@ -117,7 +117,12 @@ func (h *HttpServer) send(t string, data interface{}) {
 		fmt.Println("Error converting map to JSON:", err)
 		return
 	}
-	runtime.EventsEmit(appOnce.ctx, "event", string(jsonData))
+	if appOnce.ctx != nil {
+		runtime.EventsEmit(appOnce.ctx, "event", string(jsonData))
+	} else {
+		// headless mode: print events to stdout so CLI users can see them
+		fmt.Printf("[event] %s\n", jsonData)
+	}
 }
 
 func (h *HttpServer) writeJson(w http.ResponseWriter, data *ResponseData) {
@@ -165,6 +170,10 @@ func (h *HttpServer) buildResp(code int, message string, data interface{}) *Resp
 }
 
 func (h *HttpServer) openDirectoryDialog(w http.ResponseWriter, r *http.Request) {
+	if appOnce.ctx == nil {
+		h.error(w, "directory dialog is not available in headless mode")
+		return
+	}
 	folder, err := runtime.OpenDirectoryDialog(appOnce.ctx, runtime.OpenDialogOptions{
 		DefaultDirectory: "",
 		Title:            "Select a folder",
@@ -179,6 +188,10 @@ func (h *HttpServer) openDirectoryDialog(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *HttpServer) openFileDialog(w http.ResponseWriter, r *http.Request) {
+	if appOnce.ctx == nil {
+		h.error(w, "file dialog is not available in headless mode")
+		return
+	}
 	filePath, err := runtime.OpenFileDialog(appOnce.ctx, runtime.OpenDialogOptions{
 		Filters: []runtime.FileFilter{
 			{

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"res-downloader/core/shared"
@@ -245,9 +246,15 @@ func (r *Resource) progressEventsEmit(mediaInfo shared.MediaInfo, args ...string
 }
 
 func (r *Resource) decodeWxFile(fileName, decodeStr string) error {
+	decodeStr = strings.TrimSpace(decodeStr)
 	decodedBytes, err := base64.StdEncoding.DecodeString(decodeStr)
 	if err != nil {
-		return err
+		// 前端传来的是 base64 编码的 ISAAC64 密钥
+		// 无头模式下用户传的是原始 decodeKey（纯数字），需要通过 WASM 生成密钥
+		decodedBytes, err = r.generateWxDecryptKey(decodeStr)
+		if err != nil {
+			return fmt.Errorf("生成解密密钥失败: %v", err)
+		}
 	}
 	file, err := os.OpenFile(fileName, os.O_RDWR, 0644)
 	if err != nil {
@@ -280,4 +287,39 @@ func (r *Resource) decodeWxFile(fileName, decodeStr string) error {
 		return err
 	}
 	return nil
+}
+
+// generateWxDecryptKey 通过 Node.js 调用 WASM 模块生成微信视频解密密钥（ISAAC64）
+func (r *Resource) generateWxDecryptKey(decodeKey string) ([]byte, error) {
+	// 查找脚本路径：优先在可执行文件同级目录，其次在上一级目录
+	scriptPaths := []string{
+		"scripts/gen_decrypt_key.js",
+		"../scripts/gen_decrypt_key.js",
+	}
+	var scriptPath string
+	for _, p := range scriptPaths {
+		if _, err := os.Stat(p); err == nil {
+			scriptPath = p
+			break
+		}
+	}
+	if scriptPath == "" {
+		return nil, fmt.Errorf("未找到 gen_decrypt_key.js 脚本")
+	}
+
+	cmd := exec.Command("node", "--no-deprecation", scriptPath, decodeKey)
+	output, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return nil, fmt.Errorf("%s", string(exitErr.Stderr))
+		}
+		return nil, err
+	}
+
+	keyBase64 := strings.TrimSpace(string(output))
+	decodedBytes, err := base64.StdEncoding.DecodeString(keyBase64)
+	if err != nil {
+		return nil, fmt.Errorf("密钥 base64 解码失败: %v", err)
+	}
+	return decodedBytes, nil
 }
