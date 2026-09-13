@@ -107,18 +107,22 @@ def open_proxy():
 
 
 def set_type():
-    api_post("/api/set-type", {"type": "video"})
-    print("[INFO] 抓取类型已设为 video")
+    # 同时捕获视频和图片（图文动态的多张图片是独立的 image 资源）
+    api_post("/api/set-type", {"type": "video,image"})
+    print("[INFO] 抓取类型已设为 video,image")
 
 
 def download_resource(res):
+    res_type = res.get("Classify", "video")
+    suffix = ".mp4" if res_type == "video" else ".jpg"
+    mime = "video/mp4" if res_type == "video" else "image/jpeg"
     payload = {
         "Id": res.get("Id", ""),
         "Url": res.get("Url", ""),
-        "Name": res.get("Description", res.get("Id", "video"))[:50],
-        "Type": "video",
-        "Mime": "video/mp4",
-        "Suffix": ".mp4",
+        "Name": res.get("Description", res.get("Id", "media"))[:50],
+        "Type": res_type,
+        "Mime": mime,
+        "Suffix": suffix,
         "DecodeStr": res.get("DecodeKey", ""),
     }
     result = api_post("/api/download", payload)
@@ -224,6 +228,87 @@ def main():
     MONITOR_TIMEOUT = 300    # 监听阶段：5分钟无新事件则退出
     DOWNLOAD_TIMEOUT = 120   # 下载阶段：最多等2分钟
     RELOAD_INTERVAL = 5      # 每5秒重新加载关键词文件
+    COLLECT_WINDOW = 15      # 图文动态收集窗口：最后一次匹配后15秒内继续收集同标题资源
+
+    # 活跃标题：匹配到关键词后，在收集窗口内下载所有同标题资源（支持图文动态多图）
+    active_titles = {}  # {标题: 最后匹配时间}
+    collecting_images = False  # 是否在收集图文动态的图片（image无Description，需紧跟video后下载）
+    pending_images = {}  # 待下载的图片队列 {res_id: data}
+    downloaded_files = []  # 本次下载的所有文件路径，用于归类
+
+    def wait_download_done(res_id, f):
+        """等待单个资源下载完成，同时记录期间出现的 image 资源到待下载队列"""
+        nonlocal match_count
+        print(f"[下载] 等待下载完成...")
+        download_done = False
+        wait_start = time.time()
+        while not download_done and time.time() - wait_start < DOWNLOAD_TIMEOUT:
+            dline = f.readline()
+            if not dline:
+                time.sleep(0.3)
+                continue
+            dline = dline.strip()
+            if not dline.startswith("[event]"):
+                continue
+            try:
+                devt = json.loads(dline[len("[event] "):])
+            except json.JSONDecodeError:
+                continue
+            devt_type = devt.get("type")
+            if devt_type == "downloadProgress":
+                evt_data = devt.get("data", {})
+                if evt_data.get("Id") == res_id:
+                    save_path = evt_data.get("SavePath", "")
+                    if save_path:
+                        print(f"[完成] 下载完成: {save_path}")
+                        downloaded_files.append(save_path)
+                        download_done = True
+            elif devt_type == "newResources" and collecting_images:
+                # 等待期间记录图文动态的图片到待下载队列
+                ddata = devt.get("data", {})
+                d_res_id = ddata.get("Id", "")
+                d_classify = ddata.get("Classify", "video")
+                d_desc = ddata.get("Description", "")
+                if (d_res_id and d_res_id not in downloaded_ids and
+                        d_res_id not in pending_images and
+                        d_classify == "image" and not d_desc):
+                    pending_images[d_res_id] = ddata
+                    print(f"[收集] 记录同动态图片 [{d_classify}]")
+        if not download_done:
+            print(f"[完成] 下载已触发（{DOWNLOAD_TIMEOUT}秒超时，可能仍在后台进行）")
+        return download_done
+
+    def download_pending_images(f):
+        """下载待下载队列中的所有图片"""
+        nonlocal match_count
+        while pending_images:
+            res_id, data = pending_images.popitem()
+            if res_id in downloaded_ids:
+                continue
+            print(f"[下载] [image] 触发下载: {data.get('Url', '')[:80]}...")
+            download_resource(data)
+            downloaded_ids.add(res_id)
+            match_count += 1
+            wait_download_done(res_id, f)
+
+    def do_download(data, matched_kw=None):
+        """下载单个资源，更新计数"""
+        nonlocal match_count
+        res_id = data.get("Id", "")
+        res_type = data.get("Classify", "video")
+        print(f"[下载] [{res_type}] 触发下载: {data.get('Url', '')[:80]}...")
+        result = download_resource(data)
+        if result:
+            print(f"[下载] 响应: {result[:200]}")
+        downloaded_ids.add(res_id)
+        match_count += 1
+        if matched_kw:
+            keywords[matched_kw] += 1
+        wait_download_done(res_id, f)
+        # video 下载完成后，批量下载收集到的图片
+        if res_type == "video" and pending_images:
+            print(f"[批量] 开始下载 {len(pending_images)} 张同动态图片...")
+            download_pending_images(f)
 
     try:
         with open(LOG_FILE, "r", errors="ignore") as f:
@@ -238,6 +323,13 @@ def main():
                 if time.time() - last_reload_time > RELOAD_INTERVAL:
                     reload_keywords(keywords)
                     last_reload_time = time.time()
+
+                # 清理过期的活跃标题
+                now = time.time()
+                active_titles = {t: ts for t, ts in active_titles.items()
+                                 if now - ts < COLLECT_WINDOW}
+                if not active_titles:
+                    collecting_images = False
 
                 line = f.readline()
                 if not line:
@@ -260,50 +352,42 @@ def main():
                     if not res_id or res_id in downloaded_ids:
                         continue
 
-                    # 检查是否匹配任意关键词（且该关键词未达目标数量）
-                    matched_kw = None
-                    for kw, count in keywords.items():
-                        if count < args.max and match_title(desc, kw, args.match):
-                            matched_kw = kw
-                            break
+                    # 检查是否匹配活跃标题（图文动态的其他图片）
+                    is_active_title = any(match_title(desc, t, args.match)
+                                          for t in active_titles)
 
-                    if matched_kw:
-                        print(f"[匹配] 关键词「{matched_kw}」-> {desc}")
-                        print(f"[下载] 触发下载: {data.get('Url', '')[:80]}...")
-                        result = download_resource(data)
-                        if result:
-                            print(f"[下载] 响应: {result[:200]}")
-                        downloaded_ids.add(res_id)
-                        match_count += 1
-                        keywords[matched_kw] += 1
-                        # 等待下载完成
-                        print(f"[下载] 等待下载完成...")
-                        download_done = False
-                        wait_start = time.time()
-                        while not download_done and time.time() - wait_start < DOWNLOAD_TIMEOUT:
-                            dline = f.readline()
-                            if not dline:
-                                time.sleep(0.3)
-                                continue
-                            dline = dline.strip()
-                            if not dline.startswith("[event]"):
-                                continue
-                            try:
-                                devt = json.loads(dline[len("[event] "):])
-                            except json.JSONDecodeError:
-                                continue
-                            if devt.get("type") == "downloadProgress":
-                                evt_data = devt.get("data", {})
-                                if evt_data.get("Id") == res_id:
-                                    save_path = evt_data.get("SavePath", "")
-                                    if save_path:
-                                        print(f"[完成] 下载完成: {save_path}")
-                                        download_done = True
-                        if not download_done:
-                            print(f"[完成] 下载已触发（{DOWNLOAD_TIMEOUT}秒超时，可能仍在后台进行）")
+                    # 图文动态的图片 Description 为空，在收集模式下下载所有 image
+                    res_classify = data.get("Classify", "video")
+                    if collecting_images and res_classify == "image" and not desc:
+                        is_active_title = True
+
+                    # 检查是否匹配关键词
+                    matched_kw = None
+                    if not is_active_title:
+                        for kw, count in keywords.items():
+                            if count < args.max and match_title(desc, kw, args.match):
+                                matched_kw = kw
+                                break
+
+                    if matched_kw or is_active_title:
+                        if matched_kw:
+                            print(f"[匹配] 关键词「{matched_kw}」-> {desc[:60]}")
+                            # 加入活跃标题，收集同动态的其他图片
+                            active_titles[desc] = time.time()
+                            collecting_images = True  # 开启图片收集模式
+                        else:
+                            print(f"[收集] 同动态资源 [{res_classify}]")
+                            # 更新活跃标题时间
+                            for t in list(active_titles.keys()):
+                                if match_title(desc, t, args.match):
+                                    active_titles[t] = time.time()
+                                    break
+
+                        do_download(data, matched_kw)
                         last_event_time = time.time()
-                        print(f"[进度] 关键词「{matched_kw}」已下载 {keywords[matched_kw]}/{args.max}")
-                        print(f"[进度] 总计已下载 {match_count} 个视频")
+                        if matched_kw:
+                            print(f"[进度] 关键词「{matched_kw}」已下载 {keywords[matched_kw]}/{args.max}")
+                        print(f"[进度] 总计已下载 {match_count} 个资源")
                         remaining = [kw for kw, c in keywords.items() if c < args.max]
                         if remaining:
                             print(f"[进度] 剩余待抓: {', '.join(remaining)}")
@@ -328,8 +412,30 @@ def main():
                 print(f"[INFO] 已停止服务进程 {pid}")
         except Exception:
             pass
-        print(f"[总结] 共下载 {match_count} 个视频")
+        print(f"[总结] 共下载 {match_count} 个资源")
         print(f"[总结] 文件保存在: {DOWNLOAD_DIR}")
+
+        # 把本次下载的文件归到一个文件夹（图文动态的多图归类）
+        if downloaded_files:
+            import re
+            import shutil
+            # 用第一个关键词作为文件夹名，清理非法字符
+            folder_name = re.sub(r'[\\/:*?"<>|\s]+', '_', list(keywords.keys())[0])[:30]
+            target_dir = DOWNLOAD_DIR / folder_name
+            target_dir.mkdir(parents=True, exist_ok=True)
+            moved = 0
+            for fp in downloaded_files:
+                src = Path(fp)
+                if src.exists():
+                    dst = target_dir / src.name
+                    # 重名时加序号
+                    n = 1
+                    while dst.exists():
+                        dst = target_dir / f"{src.stem}_{n}{src.suffix}"
+                        n += 1
+                    shutil.move(str(src), str(dst))
+                    moved += 1
+            print(f"[归类] 已将 {moved} 个文件移至: {target_dir}")
 
 
 if __name__ == "__main__":
