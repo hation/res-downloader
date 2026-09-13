@@ -371,7 +371,16 @@ def main():
 
                     if matched_kw or is_active_title:
                         if matched_kw:
+                            # 根据 URL 判断内容类型：图文动态(20304) vs 纯视频(20302)
+                            url = data.get("Url", "")
+                            if "/20304/" in url:
+                                content_type = "图文动态"
+                            elif "/20302/" in url:
+                                content_type = "纯视频"
+                            else:
+                                content_type = "未知类型"
                             print(f"[匹配] 关键词「{matched_kw}」-> {desc[:60]}")
+                            print(f"[类型] {content_type}（将{'下载所有图片' if content_type == '图文动态' else '只下载视频'}）")
                             # 加入活跃标题，收集同动态的其他图片
                             active_titles[desc] = time.time()
                             collecting_images = True  # 开启图片收集模式
