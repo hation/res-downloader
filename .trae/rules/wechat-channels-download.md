@@ -10,6 +10,30 @@
 
 ## 执行步骤
 
+### 方式 A：按标题关键词自动监测下载（推荐）
+
+当用户提供视频标题关键词时，直接使用自动化脚本：
+
+```bash
+cd /Users/xingan/Documents/software/aiengine/res-downloader
+python3 scripts/monitor_download.py "标题关键词" [--match contains|prefix|exact] [--max N]
+```
+
+参数说明：
+- `标题关键词` — 要匹配的视频标题片段
+- `--match` — 匹配模式：`contains`(包含,默认) / `prefix`(前缀) / `exact`(完全匹配)
+- `--max` — 最多下载几个匹配视频（默认 1）
+
+脚本会自动完成：启动服务 → 开代理 → 设 video 类型 → 监听事件 → 匹配标题 → 下载。
+
+**使用流程：**
+1. 运行脚本
+2. 脚本提示后，让用户**完全退出微信(Cmd+Q)后重新打开**
+3. 用户在微信视频号中浏览视频
+4. 脚本自动匹配并下载，达到目标数量后退出
+
+### 方式 B：手动流程
+
 ### 1. 编译并启动无头服务
 ```bash
 cd /Users/xingan/Documents/software/aiengine/res-downloader

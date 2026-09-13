@@ -4,3 +4,4 @@ node_modules
 frontend/dist
 .DS_Store
 res-downloader-cli
+resdl_headless.log
