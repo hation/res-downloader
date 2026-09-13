@@ -202,6 +202,15 @@ def main():
     except KeyboardInterrupt:
         print("\n[监测] 用户中断，退出")
     finally:
+        # 关闭系统代理，避免微信无法上网
+        api_post("/api/proxy-unset")
+        time.sleep(0.5)
+        # 兜底：直接用系统命令关闭代理
+        subprocess.run(["networksetup", "-setwebproxystate", "Wi-Fi", "off"],
+                       capture_output=True)
+        subprocess.run(["networksetup", "-setsecurewebproxystate", "Wi-Fi", "off"],
+                       capture_output=True)
+        print("[INFO] 系统代理已关闭")
         print(f"[总结] 共下载 {match_count} 个视频")
         print(f"[总结] 文件保存在: {DOWNLOAD_DIR}")
 

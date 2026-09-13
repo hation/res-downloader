@@ -58,7 +58,9 @@ const waitForModule = () => {
 
 waitForModule()
   .then(b64 => {
-    process.stdout.write(b64);
+    // 用同步写入确保大字符串完整输出到 stdout
+    const fs = require('fs');
+    fs.writeSync(1, b64);
     process.exit(0);
   })
   .catch(err => {
